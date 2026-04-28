@@ -3,16 +3,14 @@ from openai import OpenAI
 from streamlit_mic_recorder import mic_recorder
 import time
 import json
-import base64
 
-# --- FIGMA UI STYLING ---
+# --- UI STYLING (Figma-ish) ---
 BG_COLOR = "#0F0F0F" 
 ACCENT_COLOR = "#FF4B4B" 
-TEXT_COLOR = "#FFFFFF"
 
 st.markdown(f"""
     <style>
-    .stApp {{ background-color: {BG_COLOR}; color: {TEXT_COLOR}; }}
+    .stApp {{ background-color: {BG_COLOR}; color: white; }}
     button {{ 
         background-color: {ACCENT_COLOR} !important; 
         color: white !important; 
@@ -22,68 +20,70 @@ st.markdown(f"""
         width: 100% !important;
         font-weight: bold !important;
     }}
+    .transcript-box {{
+        background-color: #1E1E1E;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 5px solid {ACCENT_COLOR};
+        margin-bottom: 20px;
+    }}
     </style>
     """, unsafe_allow_html=True)
 
-# --- THE "FORCE PLAY" ALARM HACK ---
 def play_alarm():
-    # Using a high-frequency beep that cuts through mobile silence
     sound_url = "https://www.soundjay.com/buttons/beep-01a.mp3"
-    html_code = f"""
-        <audio autoplay>
-            <source src="{sound_url}" type="audio/mp3">
-        </audio>
-    """
+    html_code = f'<audio autoplay><source src="{sound_url}" type="audio/mp3"></audio>'
     st.components.v1.html(html_code, height=0)
 
-# --- THE LOGIC ---
-def get_intent_and_time(transcript):
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    prompt = f"""
-    Analyze: "{transcript}"
-    Return ONLY JSON: {{"task": "string", "seconds": int}}
-    If no time is mentioned, use 30.
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return json.loads(response.choices[0].message.content)
-
-# --- THE INTERFACE ---
 st.title("Vibe Recorder")
 
-# MOBILE TIP: If mic fails, check browser permissions for streamlit.app
-st.caption("Tap 'Allow' if your browser asks for microphone access.")
-
+# --- RECORDER COMPONENT ---
 audio = mic_recorder(
     start_prompt="⏺️ START RECORDING", 
-    stop_prompt="⏹️ STOP & SET", 
+    stop_prompt="⏹️ STOP & TRANSCRIBE", 
     key='recorder'
 )
 
 if audio:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    with st.spinner("Processing..."):
+    
+    with st.spinner("Transcribing..."):
+        # 1. WHISPER TRANSCRIPTION
         transcript = client.audio.transcriptions.create(
             model="whisper-1", 
             file=("audio.wav", audio['bytes'])
         ).text
     
-    data = get_intent_and_time(transcript)
+    # --- NEW: DISPLAY TRANSCRIPTION TO USER ---
+    st.markdown(f"""
+        <div class="transcript-box">
+            <small style="color: {ACCENT_COLOR}; text-transform: uppercase;">What I heard:</small><br>
+            <i>"{transcript}"</i>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # 2. LOGIC ROUTER (GPT-4o)
+    with st.spinner("Extracting intent..."):
+        prompt = f"Analyze: '{transcript}'. Return ONLY JSON: {{\"task\": \"string\", \"seconds\": int}}. If no time mentioned, use 60."
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        data = json.loads(response.choices[0].message.content)
+    
     task = data['task']
     seconds = data['seconds']
     
-    st.success(f"Task: {task} | Timer: {seconds}s")
+    st.write(f"⏱️ Setting alarm for **{task}** ({seconds}s)")
     
-    # Simple Countdown
+    # 3. COUNTDOWN
     bar = st.progress(0)
     for i in range(seconds):
         time.sleep(1)
         bar.progress((i + 1) / seconds)
     
-    # TRIGGER THE ALARM
-    st.error(f"🚨 ALARM: {task}")
+    # 4. ALARM TRIGGER
+    st.error(f"🚨 ALERT: {task}")
     play_alarm()
     st.balloons()
     
