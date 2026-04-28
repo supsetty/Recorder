@@ -1,91 +1,73 @@
 import streamlit as st
-from openai import OpenAI
-from streamlit_mic_recorder import mic_recorder
+from streamlit_mic_recorder import speech_to_text
 import time
-import json
 
-# --- UI STYLING (Figma-ish) ---
-BG_COLOR = "#0F0F0F" 
-ACCENT_COLOR = "#FF4B4B" 
-
-st.markdown(f"""
+# --- STYLING ---
+st.markdown("""
     <style>
-    .stApp {{ background-color: {BG_COLOR}; color: white; }}
-    button {{ 
-        background-color: {ACCENT_COLOR} !important; 
-        color: white !important; 
-        border-radius: 50px !important; 
-        border: none !important;
-        height: 4em !important;
-        width: 100% !important;
-        font-weight: bold !important;
-    }}
-    .transcript-box {{
-        background-color: #1E1E1E;
-        padding: 15px;
-        border-radius: 10px;
-        border-left: 5px solid {ACCENT_COLOR};
-        margin-bottom: 20px;
-    }}
+    .stApp { background-color: #0A0A0A; color: #FFFFFF; }
+    .transcript-hero { font-size: 2.2rem; font-weight: 700; color: #FF4B4B; text-align: center; margin: 30px 0; }
+    .timer-large { font-size: 8rem; font-weight: 900; text-align: center; color: #FF4B4B; }
+    div.stButton > button { border-radius: 100px !important; height: 3.5em !important; font-size: 1.1rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
-def play_alarm():
+if 'step' not in st.session_state: st.session_state.step = "idle"
+if 'text' not in st.session_state: st.session_state.text = ""
+
+def trigger_audio():
+    # This is the "Beep" logic
     sound_url = "https://www.soundjay.com/buttons/beep-01a.mp3"
-    html_code = f'<audio autoplay><source src="{sound_url}" type="audio/mp3"></audio>'
-    st.components.v1.html(html_code, height=0)
+    st.components.v1.html(f"""
+        <audio autoplay loop><source src="{sound_url}" type="audio/mpeg"></audio>
+    """, height=0)
 
 st.title("Vibe Recorder")
 
-# --- RECORDER COMPONENT ---
-audio = mic_recorder(
-    start_prompt="⏺️ START RECORDING", 
-    stop_prompt="⏹️ STOP & TRANSCRIBE", 
-    key='recorder'
-)
+# STATE 1: IDLE / RECORDING
+if st.session_state.step == "idle":
+    st.write("Ready when you are...")
+    captured = speech_to_text(language='en', start_prompt="⏺️ RECORD THOUGHT", stop_prompt="⏹️ STOP", key='stt')
+    if captured:
+        st.session_state.text = captured
+        st.session_state.step = "confirm"
+        st.rerun()
 
-if audio:
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# STATE 2: CONFIRMATION (This 'primes' the audio)
+elif st.session_state.step == "confirm":
+    st.markdown(f'<div class="transcript-hero">"{st.session_state.text}"</div>', unsafe_allow_html=True)
+    st.write("### Set alarm for:")
     
-    with st.spinner("Transcribing..."):
-        # 1. WHISPER TRANSCRIPTION
-        transcript = client.audio.transcriptions.create(
-            model="whisper-1", 
-            file=("audio.wav", audio['bytes'])
-        ).text
-    
-    # --- NEW: DISPLAY TRANSCRIPTION TO USER ---
-    st.markdown(f"""
-        <div class="transcript-box">
-            <small style="color: {ACCENT_COLOR}; text-transform: uppercase;">What I heard:</small><br>
-            <i>"{transcript}"</i>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    # 2. LOGIC ROUTER (GPT-4o)
-    with st.spinner("Extracting intent..."):
-        prompt = f"Analyze: '{transcript}'. Return ONLY JSON: {{\"task\": \"string\", \"seconds\": int}}. If no time mentioned, use 60."
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        data = json.loads(response.choices[0].message.content)
-    
-    task = data['task']
-    seconds = data['seconds']
-    
-    st.write(f"⏱️ Setting alarm for **{task}** ({seconds}s)")
-    
-    # 3. COUNTDOWN
-    bar = st.progress(0)
-    for i in range(seconds):
+    col1, col2, col3 = st.columns(3)
+    # Clicking these buttons 'unlocks' the speakers for later
+    with col1:
+        if st.button("10s"): st.session_state.timer_end, st.session_state.step = time.time() + 10, "counting"; st.rerun()
+    with col2:
+        if st.button("15s"): st.session_state.timer_end, st.session_state.step = time.time() + 15, "counting"; st.rerun()
+    with col3:
+        if st.button("20s"): st.session_state.timer_end, st.session_state.step = time.time() + 20, "counting"; st.rerun()
+
+# STATE 3: COUNTDOWN
+elif st.session_state.step == "counting":
+    remaining = int(st.session_state.timer_end - time.time())
+    if remaining > 0:
+        st.markdown(f'<div class="timer-large">{remaining}</div>', unsafe_allow_html=True)
+        st.write(f"Vibe: **{st.session_state.text}**")
         time.sleep(1)
-        bar.progress((i + 1) / seconds)
+        st.rerun()
+    else:
+        st.session_state.step = "ringing"; st.rerun()
+
+# STATE 4: RINGING
+elif st.session_state.step == "ringing":
+    st.markdown(f'<div class="timer-large" style="background:#FF4B4B; color:white; border-radius:30px;">🚨 DONE</div>', unsafe_allow_html=True)
+    st.write(f"### {st.session_state.text}")
+    trigger_audio() # This will now work because of the earlier button click!
     
-    # 4. ALARM TRIGGER
-    st.error(f"🚨 ALERT: {task}")
-    play_alarm()
-    st.balloons()
-    
-    if st.button("DISMISS"):
+    if st.button("✅ FINISHED"):
+        st.session_state.step = "idle"
+        st.rerun()
+    if st.button("⏳ +15s"):
+        st.session_state.timer_end = time.time() + 15
+        st.session_state.step = "counting"
         st.rerun()
